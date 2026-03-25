@@ -3,72 +3,55 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 
-# Configuración de la Página
-st.set_page_config(page_title="Control Médico Pro", layout="wide")
+st.set_page_config(page_title="Control Medico", layout="wide")
 
-# 1. INICIALIZACIÓN DE LA BASE DE DATOS
 def init_db():
-    conn = sqlite3.connect('gestion_medica.db', check_same_thread=False)
+    conn = sqlite3.connect('meds.db', check_same_thread=False)
     c = conn.cursor()
-    
-    # Tablas Base
-    c.execute('''CREATE TABLE IF NOT EXISTS Medicamentos 
-                 (id_med INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, categoria TEXT, stock_minimo INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS Lotes 
-                 (id_lote INTEGER PRIMARY KEY AUTOINCREMENT, id_med INTEGER, codigo_lote TEXT, fecha_vencimiento DATE, cantidad INTEGER)''')
-    
-    # GENERACIÓN DE LAS 40 TABLAS DE ÁREAS
-    areas = [
-        "Urgencias", "UCI_Adultos", "UCI_Pediatrica", "Quirofano_1", "Quirofano_2", "Maternidad",
-        "Cardiologia", "Radiologia", "Laboratorio", "Odontologia", "Ginecologia", "Traumatologia",
-        "Farmacia_Interna", "Oncologia", "Neurologia", "Pediatria_A", "Pediatria_B", "Consulta_Externa",
-        "Nefrologia", "Urologia", "Dermatologia", "Oftalmologia", "Otorrinolaringologia", "Psiquiatria",
-        "Rehabilitacion", "Terapia_Intensiva", "Banco_Sangre", "Nutricion", "Endoscopia", "Patologia",
-        "Admision", "Emergencia_Shock", "Cuidados_Intermedios", "Infectologia", "Reumatologia",
-        "Geriatria", "Hematologia", "Gastroenterologia", "Neumologia", "Almacen_General"
-    ]
-    
-    for area in areas:
-        c.execute(f'''CREATE TABLE IF NOT EXISTS Stock_{area} 
-                     (id_stock INTEGER PRIMARY KEY AUTOINCREMENT, id_med INTEGER, cantidad INTEGER)''')
-    
+    c.execute('CREATE TABLE IF NOT EXISTS Meds (id INTEGER PRIMARY KEY, nombre TEXT, cat TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS Lotes (id INTEGER PRIMARY KEY, id_m INTEGER, lote TEXT, vence DATE, cant INTEGER)')
+    areas = ["Urgencias","UCI","Quirofano","Maternidad","Pediatria","Farmacia","Radiologia","Laboratorio"]
+    for i in range(1, 41): # Esto crea las 40 tablas numeradas por si faltan nombres
+        area_nombre = areas[i-1] if i <= len(areas) else f"Area_{i}"
+        c.execute(f'CREATE TABLE IF NOT EXISTS Stock_{area_nombre} (id INTEGER PRIMARY KEY, id_m INTEGER, cant INTEGER)')
     conn.commit()
-    return conn, areas
+    return conn, [areas[i-1] if i <= len(areas) else f"Area_{i}" for i in range(1, 41)]
 
 conn, lista_areas = init_db()
+st.title("🏥 Control de Insumos")
+op = st.sidebar.selectbox("Menu", ["Estado", "Entradas", "Salidas"])
 
-# --- INTERFAZ DE USUARIO ---
-st.title("🏥 Sistema de Control de Insumos Médicos")
+if op == "Estado":
+    st.subheader("Vencimientos y Stock")
+    df = pd.read_sql_query("SELECT Lotes.*, Meds.nombre FROM Lotes JOIN Meds ON Lotes.id_m = Meds.id", conn)
+    st.dataframe(df)
+    a_ver = st.selectbox("Ver Área", lista_areas)
+    st.table(pd.read_sql_query(f"SELECT m.nombre, s.cant FROM Stock_{a_ver} s JOIN Meds m ON s.id_m = m.id", conn))
 
-opcion = st.sidebar.selectbox("Seleccione Acción", ["Dashboard", "Ingreso (Entradas)", "Salida a Áreas", "Auditoría"])
-
-if opcion == "Dashboard":
-    st.subheader("Estado General")
-    df_lotes = pd.read_sql_query("SELECT Lotes.*, Medicamentos.nombre FROM Lotes JOIN Medicamentos ON Lotes.id_med = Medicamentos.id_med", conn)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Alertas de Vencimiento (30 días)**")
-        hoy = datetime.now().date()
-        proximo = (hoy + timedelta(days=30)).isoformat()
-        vencidos = df_lotes[df_lotes['fecha_vencimiento'] <= proximo]
-        st.dataframe(vencidos)
-    
-    with col2:
-        area_ver = st.selectbox("Ver Stock por Área", lista_areas)
-        df_area = pd.read_sql_query(f"""
-            SELECT m.nombre, s.cantidad 
-            FROM Stock_{area_ver} s 
-            JOIN Medicamentos m ON s.id_med = m.id_med""", conn)
-        st.table(df_area)
-
-elif opcion == "Ingreso (Entradas)":
-    st.subheader("Registro de Insumos")
-    with st.form("entrada"):
-        nombre = st.text_input("Nombre del Medicamento")
-        lote = st.text_input("Código de Lote")
-        cantidad = st.number_input("Cantidad", min_value=1)
-        vence = st.date_input("Fecha de Vencimiento")
+elif op == "Entradas":
+    with st.form("f1"):
+        n = st.text_input("Medicamento")
+        l = st.text_input("Lote")
+        c_val = st.number_input("Cantidad", min_value=1)
+        v = st.date_input("Vence")
         if st.form_submit_button("Guardar"):
-            c = conn.cursor()
-            c.execute("INSERT OR IG
+            curr = conn.cursor()
+            curr.execute("INSERT OR IGNORE INTO Meds (nombre, cat) VALUES (?,?)", (n, "Gral"))
+            id_m = curr.execute("SELECT id FROM Meds WHERE nombre=?", (n,)).fetchone()[0]
+            curr.execute("INSERT INTO Lotes (id_m, lote, vence, cant) VALUES (?,?,?,?)", (id_m, l, v, c_val))
+            conn.commit()
+            st.success("Registrado")
+
+elif op == "Salidas":
+    dest = st.selectbox("Destino", lista_areas)
+    ms = pd.read_sql_query("SELECT id, nombre FROM Meds", conn)
+    with st.form("f2"):
+        sel = st.selectbox("Insumo", ms['nombre'])
+        can = st.number_input("Cantidad", min_value=1)
+        if st.form_submit_button("Enviar"):
+            id_m = ms[ms['nombre'] == sel]['id'].values[0]
+            curr = conn.cursor()
+            curr.execute(f"INSERT INTO Stock_{dest} (id_m, cant) VALUES (?,?)", (int(id_m), can))
+            conn.commit()
+            st.info("Enviado")
+            
